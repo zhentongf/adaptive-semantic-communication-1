@@ -10,16 +10,14 @@ with compression and noise addition. It uses:
 """
 
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1" # Uncomment to specify GPU
-
 # Import necessary libraries
 import torch
 print(torch.__version__)            # Check PyTorch version
 print(torch.cuda.is_available())    # Should return True if GPU is available
-print(torch.version.cuda)           # Check CUDA version
+print(f"CUDA available: {torch.cuda.is_available()}")  # Check CUDA availability
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('device:', device)
-
+import random
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import pandas as pd
@@ -202,9 +200,15 @@ def to_data(x):
         x = x.detach().cpu().numpy()
     return x
 
-# Main training loop
-for lambda_var in range(1):  # Currently only one lambda value
-    
+# Generate 10 random SNR values between 0 and 20 dB
+random.seed(42)  # For reproducibility
+snr_values = [random.uniform(0, 20) for _ in range(10)]
+print("SNR values to test:", snr_values)
+
+# Outer loop for different SNR values
+for snr_idx, snr in enumerate(snr_values):
+    print(f"\n=== Testing SNR: {snr:.2f} dB ===")
+
     # Load CIFAR-10 dataset
     train_set = datasets.CIFAR10('./datasets/cifar10', train=True, transform=data_tf, download=True)
     train_data = torch.utils.data.DataLoader(train_set, batch_size=64, shuffle=True)
@@ -222,17 +226,14 @@ for lambda_var in range(1):  # Currently only one lambda value
     criterion_classifier = nn.CrossEntropyLoss()
 
     # Test different compression rates
-    for rate in range(10):
+    for rate in [0.9, 1.0]:
         compression_rate = min((rate + 1) * 0.1, 1)
         channel = max(np.sqrt(96 * (1 - compression_rate) / 3), 1)
         channel = int(channel)
         print('channel:', channel)
 
         dimension = int(96 * 96 * 3 * compression_rate / (8 * 8))
-        lambda_tmp = 0.5
         size_recover = int(96 * np.sqrt(compression_rate))
-        lambda1 = 1 - compression_rate
-        lambda2 = compression_rate
 
         class RED_CNN(nn.Module):
             """Autoencoder for compression/decompression with noise injection"""
@@ -254,7 +255,7 @@ for lambda_var in range(1):  # Currently only one lambda value
                 self.tconv5 = nn.ConvTranspose2d(128, 64, kernel_size=5, stride=2, padding=0)
                 self.tconv6 = nn.ConvTranspose2d(64, 3, kernel_size=4, stride=2, padding=0)
 
-            def forward(self, x):
+            def forward(self, x, snr_value):
                 # Encoder
                 out = F.relu(self.conv1(x))
                 out = F.relu(self.conv2(out))
@@ -263,13 +264,12 @@ for lambda_var in range(1):  # Currently only one lambda value
                 out = F.relu(self.conv5(out))
                 out = F.relu(self.conv6(out))
                 
-                # Add noise in compressed domain
+                # Add noise in compressed domain based on SNR
                 out_tmp = out.detach().cpu().numpy()
                 out_square = np.square(out_tmp)
                 aver = np.sum(out_square) / np.size(out_square)
                 
-                snr = 10  # dB
-                aver_noise = aver / 10 ** (snr / 10)
+                aver_noise = aver / 10 ** (snr_value / 10)
                 noise = torch.randn(size=out.shape) * np.sqrt(aver_noise)
                 noise = noise.to(device)
                 out = torch.add(out, noise)
@@ -285,7 +285,7 @@ for lambda_var in range(1):  # Currently only one lambda value
 
         # Initialize and load pretrained autoencoder if available
         mlp_encoder = RED_CNN().to(device)
-        model_path = ("./saved_model/CIFAR_encoder_%.6f.pkl" % compression_rate)
+        model_path = ("./saved_model/CIFAR_encoder_%.6f_snr_%.2f.pkl" % (compression_rate, snr))
         pre_model_exist = os.path.isfile(model_path)
         
         if pre_model_exist:
@@ -313,6 +313,7 @@ for lambda_var in range(1):  # Currently only one lambda value
 
         print('Training Start')
         print('Compression Rate:', compression_rate)
+        print('SNR:', snr)
         epoch_len = 20
         
         # Training loop
@@ -336,8 +337,22 @@ for lambda_var in range(1):  # Currently only one lambda value
                 im = im.to(device)
                 label = label.to(device)
                 
-                # Forward pass
-                out = mlp_encoder(im)
+                # Adaptive transmission based on SNR
+                if snr < 10:
+                    # Use neural network for SNR < 10
+                    out = mlp_encoder(im, snr)
+                else:
+                    # Copy raw image for SNR >= 10
+                    out = im.clone()
+                    out_np = out.detach().cpu().numpy()
+                    out_square = np.square(out_np)
+                    aver = np.sum(out_square) / np.size(out_square)
+                    aver_noise = aver / 10 ** (snr / 10)
+                    noise = np.random.random(size=out_np.shape) * np.sqrt(aver_noise)
+                    noise = torch.from_numpy(noise).to(device).to(torch.float32)
+                    # Add Gaussian noise based on SNR
+                    out = torch.add(out, noise)
+                
                 out_mnist = classifier(out)
                 out_real = classifier(im)
                 
@@ -348,10 +363,11 @@ for lambda_var in range(1):  # Currently only one lambda value
                 psnr = 10 * (np.log(1. / mse.item()) / np.log(10))
                 psnr_aver += psnr
                 
-                # Backward pass
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                # Only update encoder if using neural network
+                if snr < 10:
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
                 
                 counter += 1
                 train_loss += loss.item()
@@ -369,8 +385,8 @@ for lambda_var in range(1):  # Currently only one lambda value
                     merged = merge_images(im_data, out_data)
 
                     # save the images
-                    path = os.path.join('images/sample-epoch-%d-lambda-%.2f-compre-%.2f.png' % (
-                        e, lambda1, compression_rate))
+                    path = os.path.join('./image_recover_combing/cifar10/merged_images/sample-epoch-%d-compre-%.2f-snr-%.2f.png' % (
+                        e, compression_rate, snr))
                     # scipy.misc.imsave(path, merged)
                     print(f"merged shape: {merged.shape}, dtype: {merged.dtype}")
                     imageio.imwrite(path, merged)
@@ -396,7 +412,22 @@ for lambda_var in range(1):  # Currently only one lambda value
                     im = im.to(device)
                     label = label.to(device)
                     
-                    out = mlp_encoder(im)
+                    # Adaptive transmission based on SNR
+                    if snr < 10:
+                        # Use neural network for SNR < 10
+                        out = mlp_encoder(im, snr)
+                    else:
+                        # Copy raw image for SNR >= 10
+                        out = im.clone()
+                        out_np = out.detach().cpu().numpy()
+                        out_square = np.square(out_np)
+                        aver = np.sum(out_square) / np.size(out_square)
+                        aver_noise = aver / 10 ** (snr / 10)
+                        noise = np.random.random(size=out_np.shape) * np.sqrt(aver_noise)
+                        noise = torch.from_numpy(noise).to(device).to(torch.float32)
+                        # Add Gaussian noise based on SNR
+                        out = torch.add(out, noise)
+                    
                     out_mnist = classifier(out)
                     
                     loss = criterion(out, label, im)
@@ -407,6 +438,8 @@ for lambda_var in range(1):  # Currently only one lambda value
                     acc = num_correct / im.shape[0]
                     eval_acc += acc
                     
+                    cr1 = nn.MSELoss()
+                    mse = cr1(out, im)
                     psnr = 10 * (np.log(1. / mse.item()) / np.log(10))
                     eval_psnr += psnr
                     counter += 1
@@ -418,22 +451,26 @@ for lambda_var in range(1):  # Currently only one lambda value
                          eval_psnr / counter, train_acc, train_loss,
                          psnr_aver))
 
-            # Save model and results
-            torch.save(mlp_encoder.state_dict(), ('saved_model/CIFAR_encoder_%f.pkl' % compression_rate))
+            # Save model and results (only if using neural network)
+            if snr < 10:
+                torch.save(mlp_encoder.state_dict(), ('saved_model/CIFAR_encoder_%f_snr_%.2f.pkl' % (compression_rate, snr)))
             
-            # Save accuracy and PSNR results
-            file = ('./results/MLP_sem_CIFAR/acc_semantic_combining_%.2f_lambda_%.2f.csv' % (
-                compression_rate, lambda1))
+            # Save accuracy and PSNR results with SNR in filename
+            file = ('./results/MLP_sem_CIFAR/acc_semantic_combining_%.2f_snr_%.2f.csv' % (
+                compression_rate, snr))
             data = pd.DataFrame(acces)
             data.to_csv(file, index=False)
 
             eval_psnr = np.array(psnr_all)
-            file = ('./results/MLP_sem_CIFAR/psnr_semantic_combining_%.2f_lambda_%.2f.csv' % (
-                compression_rate, lambda1))
+            file = ('./results/MLP_sem_CIFAR/psnr_semantic_combining_%.2f_snr_%.2f.csv' % (
+                compression_rate, snr))
             data = pd.DataFrame(eval_psnr)
             data.to_csv(file, index=False)
-            # save the recovered image
-            for ii in range(len(out)):
-                pil_img = Image.fromarray(np.uint8(out[ii].detach().cpu().numpy().transpose(1, 2, 0) * 255))
-                pil_img.save(
-                    "./image_recover_combing/cifar10/mnist_train_%d_%f_lambda_%f.jpg" % (ii, compression_rate, lambda1))
+            # save the recovered image (only if using neural network)
+            if snr < 10 and out is not None:
+                for ii in range(min(len(out), 10)):  # Save only first 10 images to avoid too many files
+                    pil_img = Image.fromarray(np.uint8(out[ii].detach().cpu().numpy().transpose(1, 2, 0) * 255))
+                    pil_img.save(
+                        "./image_recover_combing/cifar10/cifar_train_%d_%f_snr_%.2f.jpg" % (ii, compression_rate, snr))
+
+print("All experiments completed!")
