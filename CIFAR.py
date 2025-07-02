@@ -226,7 +226,7 @@ for snr_idx, snr in enumerate(snr_values):
     criterion_classifier = nn.CrossEntropyLoss()
 
     # Test different compression rates
-    for rate in [0.9, 1.0]:
+    for rate in range(6, 10):
         compression_rate = min((rate + 1) * 0.1, 1)
         channel = max(np.sqrt(96 * (1 - compression_rate) / 3), 1)
         channel = int(channel)
