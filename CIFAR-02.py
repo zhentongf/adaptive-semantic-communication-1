@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # encoding: utf-8
 """
 This script implements a deep learning pipeline for CIFAR-10 image classification 

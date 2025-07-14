@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # encoding: utf-8
 
 # 导入必要的库 / Import necessary libraries
