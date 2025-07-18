@@ -60,7 +60,7 @@ ax1.set_xlabel('SNR (dB)', fontsize=12)
 ax1.set_ylabel('Accuracy', color=color, fontsize=12)
 ax1.plot(snr_values, accuracy, marker='o', linestyle='-', color=color, linewidth=2, markersize=6, label='Accuracy')
 ax1.tick_params(axis='y', labelcolor=color)
-ax1.set_ylim(0.4, 1.0)  # Accuracy range: 0.4-1.0
+# ax1.set_ylim(0.4, 1.0)  # Accuracy range: 0.4-1.0
 ax1.xaxis.set_major_locator(MaxNLocator(integer=False))  # Ensure SNR ticks are readable
 ax1.grid(alpha=0.3)
 
@@ -70,10 +70,10 @@ color = 'tab:red'
 ax2.set_ylabel('PSNR (dB)', color=color, fontsize=12)  
 ax2.plot(snr_values, psnr, marker='s', linestyle='--', color=color, linewidth=2, markersize=6, label='PSNR')
 ax2.tick_params(axis='y', labelcolor=color)
-ax2.set_ylim(10, 35)  # PSNR range: 10-35 dB
+# ax2.set_ylim(10, 35)  # PSNR range: 10-35 dB
 
 # Add title and legend
-plt.title('Accuracy and PSNR vs. SNR (Compression Rate = 0.1)', fontsize=14, pad=15)
+plt.title('Accuracy and PSNR vs. SNR for MNIST (Compression Rate = 0.1)', fontsize=14, pad=15)
 lines, labels = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
 ax1.legend(lines + lines2, labels + labels2, loc='lower right', fontsize=10)
